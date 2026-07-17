@@ -95,7 +95,10 @@ class ShizukuShellClientImpl @Inject constructor(
     }
 
     init {
-        Shizuku.addBinderReceivedListener(binderReceivedListener)
+        // Sticky variant fires immediately if the binder was already received before this
+        // Singleton was constructed (common when Shizuku is already running at app start),
+        // avoiding a race where a non-sticky listener would miss the initial delivery.
+        Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
         Shizuku.addBinderDeadListener(binderDeadListener)
         Shizuku.addRequestPermissionResultListener(permissionResultListener)
         updateState()
@@ -128,22 +131,28 @@ class ShizukuShellClientImpl @Inject constructor(
     /**
      * Computes the current Shizuku availability state.
      *
-     * The ordering is important:
-     * 1) Not installed
-     * 2) Installed but server not running (binder not alive)
-     * 3) Server running but permission missing
-     * 4) Ready
+     * A live binder is treated as authoritative proof that Shizuku is both installed and running:
+     * the Shizuku server pushes the binder into our [rikka.shizuku.ShizukuProvider], so [isBinderAlive]
+     * succeeds regardless of PackageManager package-visibility filtering. We therefore check the
+     * binder FIRST and only fall back to [isShizukuInstalled] (a PackageManager query, which can be
+     * blocked by package visibility on API 30+) when the binder is dead, to distinguish
+     * "not installed" from "installed but not running".
+     *
+     * Ordering:
+     * 1) Binder alive + permission granted  -> Ready
+     * 2) Binder alive + permission missing  -> PermissionRequired
+     * 3) Binder dead + package present      -> NotRunning
+     * 4) Binder dead + package absent       -> NotInstalled
      */
     private fun computeStateSafely(): ShizukuState {
-        val installed = isShizukuInstalled()
-        if (!installed) return ShizukuState.NotInstalled
+        if (isBinderAlive()) {
+            // Binder is alive => Shizuku is installed and running. Only permission remains.
+            val granted = hasPermissionWhenBinderAlive()
+            return if (granted) ShizukuState.Ready else ShizukuState.PermissionRequired
+        }
 
-        val binderAlive = isBinderAlive()
-        if (!binderAlive) return ShizukuState.NotRunning
-
-        // If the binder is alive, Shizuku is running. Now check permission.
-        val granted = hasPermissionWhenBinderAlive()
-        return if (granted) ShizukuState.Ready else ShizukuState.PermissionRequired
+        // Binder is dead: use PackageManager to tell "not installed" from "not running".
+        return if (isShizukuInstalled()) ShizukuState.NotRunning else ShizukuState.NotInstalled
     }
 
     private fun isBinderAlive(): Boolean {
@@ -201,16 +210,16 @@ class ShizukuShellClientImpl @Inject constructor(
     override suspend fun requestPermission() {
         Log.d(TAG, "requestPermission() called")
 
-        if (!isShizukuInstalled()) {
-            _state.value = ShizukuState.NotInstalled
-            return
-        }
-
-        // Check if Shizuku server is running (binder alive). If not, we can't request permission.
-        val binderAlive = isBinderAlive()
-        if (!binderAlive) {
-            Log.w(TAG, "Shizuku binder not alive, cannot request permission")
-            _state.value = ShizukuState.NotRunning
+        // A live binder proves Shizuku is installed and running, even if a PackageManager query
+        // would be blocked by package visibility. Check it first; only when it is dead do we fall
+        // back to a package lookup to distinguish "not installed" from "not running".
+        if (!isBinderAlive()) {
+            if (!isShizukuInstalled()) {
+                _state.value = ShizukuState.NotInstalled
+            } else {
+                Log.w(TAG, "Shizuku binder not alive, cannot request permission")
+                _state.value = ShizukuState.NotRunning
+            }
             return
         }
 
