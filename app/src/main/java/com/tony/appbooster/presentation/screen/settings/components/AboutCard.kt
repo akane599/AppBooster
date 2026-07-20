@@ -40,12 +40,12 @@ import com.tony.appbooster.R
  * project's open-source GitHub repository in the device browser.
  *
  * @param versionName Human-readable app version string (e.g. "1.2.3").
- * @param versionChannel Optional release channel label (e.g. "Alpha", "Beta").
+ * @param versionCode Gradle version code for the current build.
  */
 @Composable
 internal fun AboutCard(
     versionName: String,
-    versionChannel: String?
+    versionCode: String
 ) {
     val context = LocalContext.current
     val githubUrl = stringResource(R.string.about_open_source_url)
@@ -93,17 +93,17 @@ internal fun AboutCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = versionName.ifEmpty { stringResource(R.string.about_version_fallback) },
+                        text = versionName,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    versionChannel?.let { channel ->
+                    if (versionCode.isNotEmpty()) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
                             color = MaterialTheme.colorScheme.tertiaryContainer
                         ) {
                             Text(
-                                text = channel,
+                                text = stringResource(R.string.about_version_code, versionCode),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer,
@@ -172,4 +172,3 @@ internal fun AboutCard(
         }
     }
 }
-

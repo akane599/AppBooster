@@ -137,7 +137,7 @@
     <string name="dashboard_ready_full_optimization_description">Compilazione per prestazioni massime</string>
 
     <string name="about_app_title">OptiDroid</string>
-    <string name="about_version_fallback">1.0.0</string>
+    <string name="about_version_code">Codice %1$s</string>
     <string name="about_open_source_title">Open Source</string>
     <string name="about_open_source_description">Visualizza il codice sorgente su GitHub</string>
     <string name="about_open_source_url">https://github.com/androidexpert35/AppBooster?tab=readme-ov-file</string>
