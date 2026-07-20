@@ -110,12 +110,12 @@ jobs:
 
       - name: Prepare signing keystore
         env:
-          GH_RELEASE_KEYSTORE_BASE64: ${{ secrets.GH_RELEASE_KEYSTORE_BASE64 }}
-          GH_RELEASE_KEY_ALIAS:       ${{ secrets.GH_RELEASE_KEY_ALIAS }}
-          GH_RELEASE_KEY_PASSWORD:    ${{ secrets.GH_RELEASE_KEY_PASSWORD }}
-          GH_RELEASE_STORE_PASSWORD:  ${{ secrets.GH_RELEASE_STORE_PASSWORD }}
+          PS_RELEASE_KEY_FILE:       ${{ secrets.PS_RELEASE_KEY_FILE }}
+          PS_RELEASE_KEY_ALIAS:      ${{ secrets.PS_RELEASE_KEY_ALIAS }}
+          PS_RELEASE_KEY_PASSWORD:   ${{ secrets.PS_RELEASE_KEY_PASSWORD }}
+          PS_RELEASE_STORE_PASSWORD: ${{ secrets.PS_RELEASE_STORE_PASSWORD }}
         run: |
-          for secret in GH_RELEASE_KEYSTORE_BASE64 GH_RELEASE_KEY_ALIAS GH_RELEASE_KEY_PASSWORD GH_RELEASE_STORE_PASSWORD; do
+          for secret in PS_RELEASE_KEY_FILE PS_RELEASE_KEY_ALIAS PS_RELEASE_STORE_PASSWORD; do
             if [ -z "${!secret}" ]; then
               echo "::error::Required secret $secret is not configured."
               exit 1
@@ -123,17 +123,32 @@ jobs:
           done
 
           keystore_path="$RUNNER_TEMP/release-keystore.jks"
-          echo "$GH_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          echo "$PS_RELEASE_KEY_FILE" | base64 --decode > "$keystore_path"
+
+          # Falls back to the store password when no separate key password secret is set.
+          key_password="${PS_RELEASE_KEY_PASSWORD:-$PS_RELEASE_STORE_PASSWORD}"
 
           {
             echo "GH_RELEASE_KEYSTORE_PATH=$keystore_path"
-            echo "GH_RELEASE_KEY_ALIAS=$GH_RELEASE_KEY_ALIAS"
-            echo "GH_RELEASE_KEY_PASSWORD=$GH_RELEASE_KEY_PASSWORD"
-            echo "GH_RELEASE_STORE_PASSWORD=$GH_RELEASE_STORE_PASSWORD"
+            echo "GH_RELEASE_KEY_ALIAS=$PS_RELEASE_KEY_ALIAS"
+            echo "GH_RELEASE_KEY_PASSWORD=$key_password"
+            echo "GH_RELEASE_STORE_PASSWORD=$PS_RELEASE_STORE_PASSWORD"
           } >> "$GITHUB_ENV"
 
       - name: Assemble signed release APK & AAB
         run: ./gradlew --no-daemon :app:assembleRelease :app:bundleRelease
+
+      - name: Print signing certificate fingerprint
+        run: |
+          echo "### Release signing certificate" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          keytool -list -v \
+            -keystore "$GH_RELEASE_KEYSTORE_PATH" \
+            -alias "$GH_RELEASE_KEY_ALIAS" \
+            -storepass "$GH_RELEASE_STORE_PASSWORD" \
+            2>/dev/null | grep -E "SHA1|SHA256" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Compare the SHA1 above against what Play Console expects before uploading." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload signed artifacts
         uses: actions/upload-artifact@v4
