@@ -93,11 +93,14 @@ fun OptimizationActivityFeed(
     applyInternalPadding: Boolean = true,
 ) {
     val listState = rememberLazyListState()
+    val visibleEntries = entries.takeLast(MAX_VISIBLE_ENTRIES)
 
-    // Auto-scroll to latest entry whenever the list grows
-    LaunchedEffect(entries.size) {
-        if (entries.isNotEmpty()) {
-            listState.animateScrollToItem(entries.size - 1)
+    // Keep the live process focused on the latest app. Keying the effect to the
+    // last entry id (rather than list size) also keeps following new entries
+    // after the logger reaches its fixed-size retention limit.
+    LaunchedEffect(visibleEntries.lastOrNull()?.id) {
+        if (visibleEntries.isNotEmpty()) {
+            listState.animateScrollToItem(visibleEntries.lastIndex)
         }
     }
 
@@ -112,7 +115,7 @@ fun OptimizationActivityFeed(
     ) {
         Column(
             modifier = Modifier
-                .padding(16.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .then(if (isExpanded || fillHeight) Modifier.fillMaxSize() else Modifier)
         ) {
             // Header row
@@ -134,7 +137,7 @@ fun OptimizationActivityFeed(
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
 
             if (entries.isEmpty()) {
                 EmptyFeedState(isExpanded = isExpanded || fillHeight)
@@ -150,11 +153,11 @@ fun OptimizationActivityFeed(
                 LazyColumn(
                     state = listState,
                     modifier = listModifier,
-                    contentPadding = PaddingValues(vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    contentPadding = PaddingValues(vertical = 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(
-                        items = entries.takeLast(50),
+                        items = visibleEntries,
                         key = { it.id }
                     ) { entry ->
                         AnimatedVisibility(
@@ -226,6 +229,7 @@ private fun ActivityLogItem(entry: OptimizationLogEntry) {
     val context = LocalContext.current
 
     var appIcon by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var appLabel by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(entry.packageName) {
         entry.packageName?.let { pkg ->
@@ -234,8 +238,10 @@ private fun ActivityLogItem(entry: OptimizationLogEntry) {
                 val applicationInfo = pm.getApplicationInfo(pkg, 0)
                 val drawable = applicationInfo.loadIcon(pm)
                 appIcon = drawable.toBitmap(width = 64, height = 64)
+                appLabel = applicationInfo.loadLabel(pm).toString()
             } catch (_: Exception) {
                 appIcon = null
+                appLabel = null
             }
         }
     }
@@ -251,14 +257,14 @@ private fun ActivityLogItem(entry: OptimizationLogEntry) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(style.backgroundColor)
-            .padding(12.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Leading icon area
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .size(32.dp)
+                .clip(RoundedCornerShape(9.dp))
                 .background(
                     if (isAppEntry && appIcon != null) Color.Transparent
                     else style.color.copy(alpha = 0.2f)
@@ -271,7 +277,7 @@ private fun ActivityLogItem(entry: OptimizationLogEntry) {
                     contentDescription = entry.message,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(7.dp))
                 )
                 isAppEntry -> Text(
                     // Fallback to package initial when icon has not loaded yet
@@ -289,19 +295,22 @@ private fun ActivityLogItem(entry: OptimizationLogEntry) {
             }
         }
 
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = resolvedMessage,
+                text = appLabel ?: entry.packageName
+                    ?.substringAfterLast(".")
+                    ?.replaceFirstChar { it.uppercase() }
+                    ?: resolvedMessage,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            entry.packageName?.let { pkg ->
+            if (entry.packageName != null) {
                 Text(
-                    text = pkg,
+                    text = resolvedMessage,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -328,6 +337,8 @@ private fun ActivityLogItem(entry: OptimizationLogEntry) {
         )
     }
 }
+
+private const val MAX_VISIBLE_ENTRIES = 50
 
 /**
  * Resolves a [LogMessageKey] to a localised string using the current composition context.
@@ -395,4 +406,3 @@ private fun resolveLogEntryStyle(type: LogEntryType): LogEntryStyle {
     }
     return LogEntryStyle(icon = icon, color = color, backgroundColor = color.copy(alpha = 0.1f))
 }
-

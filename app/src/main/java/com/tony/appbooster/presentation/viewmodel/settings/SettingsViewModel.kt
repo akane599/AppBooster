@@ -24,7 +24,7 @@ import javax.inject.Inject
  * @param navigationManager Interface to dispatch navigation commands.
  * @param observeAppOptimizationTypeUseCase Stream of optimization type changes.
  * @param setAppOptimizationTypeUseCase Command to persist optimization changes.
- * @param getAppInfoUseCase Use case that exposes app version and channel data.
+ * @param getAppInfoUseCase Use case that exposes app version name and code.
  * @param observeShizukuStateUseCase Stream of Shizuku state changes.
  * @return [SettingsUiState] exposed as a StateFlow through [BaseViewModel].
  */
@@ -92,7 +92,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Loads app version and channel data and merges it into the existing
+     * Loads app version name and code and merges them into the existing
      * Settings UI snapshot, allowing the screen to show dynamic build info.
      *
      * @return Unit, the resulting state or error is pushed to [uiState].
@@ -105,7 +105,7 @@ class SettingsViewModel @Inject constructor(
                     updateUiData(
                         currentUiData().copy(
                             appVersionName = appInfo.versionName,
-                            appVersionChannel = appInfo.buildChannel
+                            appVersionCode = appInfo.versionCode
                         )
                     )
                 }
