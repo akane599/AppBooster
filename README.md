@@ -245,11 +245,12 @@ cd OptiDroid
 
 ### GitHub Actions CI
 
-The repository includes a GitHub Actions workflow at `.github/workflows/android-ci.yml` with three jobs:
+The repository includes a GitHub Actions workflow at `.github/workflows/android-ci.yml` with four jobs:
 
 | Job | Trigger | What it does |
 |-----|---------|--------------|
 | **Unit tests** | Every push & PR | Runs `./gradlew runUnitTests` (the existing Gradle task) |
+| **Debug APK** | Every push & PR, after tests pass | Builds an installable debug APK and uploads it as a run artifact |
 | **Signed release build** | Push to `master` only, after tests pass | Builds signed APK + AAB |
 | **Publish GitHub Release** | After signed build succeeds | Creates a GitHub Release with the **merged PR body as changelog** and attaches the APK & AAB |
 
@@ -257,16 +258,36 @@ The release tag is derived automatically from `versionName` and `versionCode` in
 
 > **Changelog**: When you merge a PR into `master`, the CI extracts the PR description and uses it as the release notes. If no matching PR is found (e.g. a direct push), it falls back to the last 10 commit messages.
 
-Configure these repository secrets:
+#### Just want to build and try the app?
 
-| Secret | Purpose |
-|--------|---------|
-| `GH_RELEASE_KEYSTORE_BASE64` | Base64-encoded contents of the release keystore file |
-| `GH_RELEASE_KEY_ALIAS` | Alias of the release key inside the keystore |
-| `GH_RELEASE_KEY_PASSWORD` | Password for the selected key alias |
-| `GH_RELEASE_STORE_PASSWORD` | Password for the keystore itself |
+You don't need a keystore or any secrets. Push your change, open the run under
+the **Actions** tab, and download the APK from the **debug-apk** artifact. Debug
+builds are signed with a keystore Gradle generates on the runner.
 
-All four secrets are **required** for the release & publish jobs. Unit tests still run on every push and PR regardless of secrets.
+Installing it over a Play Store copy fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+because the signatures differ — uninstall the Play version first.
+
+#### Release signing
+
+Only needed to publish. Configure these repository secrets:
+
+| Secret | Purpose | Required |
+|--------|---------|----------|
+| `PS_RELEASE_KEY_FILE` | Base64-encoded **contents** of the release keystore file (not a path) | Yes |
+| `PS_RELEASE_KEY_ALIAS` | Alias of the release key inside the keystore | Yes |
+| `PS_RELEASE_STORE_PASSWORD` | Password for the keystore itself | Yes |
+| `PS_RELEASE_KEY_PASSWORD` | Password for the selected key alias | No — falls back to the store password |
+
+Base64-encode the keystore with `base64 -w 0 release.jks` (Linux) or
+`base64 -i release.jks | pbcopy` (macOS), then paste the result as the secret value.
+
+> **Note**: `keytool` creates PKCS12 keystores, which do not support a key password
+> that differs from the store password — it prints a warning and ignores `-keypass`.
+> Leave `PS_RELEASE_KEY_PASSWORD` unset for such keystores. Setting it to the wrong
+> value fails the build with `Get Key failed: Given final block not properly padded`.
+
+Unit tests and the debug APK build on every push and PR regardless of secrets. When
+the required secrets are missing, only the release & publish jobs fail.
 
 ---
 
