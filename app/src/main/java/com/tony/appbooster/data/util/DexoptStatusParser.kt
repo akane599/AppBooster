@@ -11,6 +11,17 @@ package com.tony.appbooster.data.util
 internal object DexoptStatusParser {
 
     /**
+     * Marker returned when a package is listed in the dexopt dump but its own block
+     * reports no compiler filter.
+     *
+     * This is *inconclusive*, not a filter: the package must still be resolved through
+     * the remaining detection steps. Treating it as an answer makes every such package
+     * look permanently unoptimised, because compiling it does not change what the dump
+     * reports about it.
+     */
+    const val FILTER_PRESENT_NO_DETAIL = "unknown-present"
+
+    /**
      * Attempts to interpret the output of `cmd package compile --check <package>`.
      *
      * Different Android versions output different formats. We support:
@@ -92,7 +103,7 @@ internal object DexoptStatusParser {
 
         // If we can see the package in a Dexopt state section but no filter lines are provided,
         // return a marker so callers can treat it differently from "not found".
-        return if (isPackagePresentInDexoptDump(packageName, dump)) "unknown-present" else null
+        return if (isPackagePresentInDexoptDump(packageName, dump)) FILTER_PRESENT_NO_DETAIL else null
     }
 
     /**

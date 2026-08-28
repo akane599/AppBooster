@@ -111,7 +111,13 @@ class CompilationInfoResolver @Inject constructor(
         var lastUpdateTimeMs: Long? = null
 
         // ── Step 2: global dexopt dump ─────────────────────────────────────────
-        fromDexoptDump(packageName, targetFilter, lastUpdateTimeMs)?.let { return it }
+        // A real filter is definitive. "Present but no details" is not an answer, so
+        // it falls through to the cheaper-to-be-wrong steps below rather than
+        // short-circuiting them.
+        val dexoptFilter = fromDexoptDump(packageName)
+        if (dexoptFilter != null && dexoptFilter != DexoptStatusParser.FILTER_PRESENT_NO_DETAIL) {
+            return resolveCompilationInfo(packageName, dexoptFilter, lastUpdateTimeMs, targetFilter)
+        }
 
         // ── Step 3: per-package dumpsys ────────────────────────────────────────
         fromPackageDumpsys(packageName, targetFilter)?.let { (info, updateMs) ->
@@ -125,7 +131,14 @@ class CompilationInfoResolver @Inject constructor(
         // ── Step 5: OAT file scan ──────────────────────────────────────────────
         val oatFilter = fromOatScan(packageName)
 
-        return resolveCompilationInfo(packageName, oatFilter, lastUpdateTimeMs, targetFilter)
+        // Nothing conclusive. Prefer on-disk evidence, then fall back to the
+        // "listed without details" marker so it can be classified one last time.
+        return resolveCompilationInfo(
+            packageName,
+            oatFilter ?: dexoptFilter,
+            lastUpdateTimeMs,
+            targetFilter
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -157,12 +170,12 @@ class CompilationInfoResolver @Inject constructor(
     /**
      * Step 2 — parses the global `dumpsys package dexopt` output (fetched once
      * per run and cached).
+     *
+     * @return The compiler filter reported for [packageName],
+     *         [DexoptStatusParser.FILTER_PRESENT_NO_DETAIL] when the package is listed
+     *         without one, or null when the dump is unavailable or omits the package.
      */
-    private suspend fun fromDexoptDump(
-        packageName: String,
-        targetFilter: String,
-        lastUpdateTimeMs: Long?
-    ): AppCompilationInfo? {
+    private suspend fun fromDexoptDump(packageName: String): String? {
         if (!dexoptDumpAttempted) {
             logger.addLogEntry(LogEntryType.ANALYZING, "Dexopt dump",
                 detail = "dumpsys package dexopt (once per run)")
@@ -173,17 +186,19 @@ class CompilationInfoResolver @Inject constructor(
                 packageName = packageName, detail = "cache hit")
         }
 
-        val dump = cachedDexoptDump
+        val dump = cachedDexoptDump ?: return null
+        val filter = DexoptStatusParser.parseCompilerFilterFromDexoptDump(packageName, dump)
 
-        if (dump != null) {
-            val filter = DexoptStatusParser.parseCompilerFilterFromDexoptDump(packageName, dump)
-            if (filter != null) {
-                logger.addLogEntry(LogEntryType.INFO, "Dexopt status",
-                    packageName = packageName, detail = "filter=$filter")
-                return resolveCompilationInfo(packageName, filter, lastUpdateTimeMs, targetFilter)
-            }
+        if (filter != null) {
+            logger.addLogEntry(LogEntryType.INFO, "Dexopt status",
+                packageName = packageName,
+                detail = if (filter == DexoptStatusParser.FILTER_PRESENT_NO_DETAIL) {
+                    "listed without a compiler filter"
+                } else {
+                    "filter=$filter"
+                })
         }
-        return null
+        return filter
     }
 
     /**
@@ -342,9 +357,11 @@ class CompilationInfoResolver @Inject constructor(
             compilerFilter == "verify" && targetFilter.lowercase() == "speed-profile" ->
                 false to AppCompilationInfo.SkipReason.NoProfile(compilerFilter)
 
-            // Overlay/RRO detection for packages present in dexopt but without filter details
-            compilerFilter == "unknown-present" ->
-                resolveOverlay(packageName)
+            // Listed in the dexopt dump but no filter reported, and nothing else could
+            // resolve it. Compiling such a package does not change what the dump says
+            // about it, so queueing it would recompile it on every run forever.
+            compilerFilter == DexoptStatusParser.FILTER_PRESENT_NO_DETAIL ->
+                resolveUndetailedPackage(packageName)
 
             // OAT exists but exact filter unknown — conservative re-compile for speed-profile
             compilerFilter == "unknown-optimized" -> {
@@ -371,11 +388,17 @@ class CompilationInfoResolver @Inject constructor(
     }
 
     /**
-     * Classifies a package with `unknown-present` filter as overlay or real app.
+     * Classifies a package that the dexopt dump listed without any compiler filter,
+     * and that no other detection step could resolve.
+     *
+     * Both outcomes skip the package. The system knows about its dexopt state and
+     * reports nothing actionable — typically an overlay/RRO, a resource-only APK, or a
+     * package whose code the platform manages — so re-compiling it cannot change that
+     * verdict. "Force optimization" still recompiles it on demand.
      *
      * @return Pair of (needsOptimization, skipReason).
      */
-    private suspend fun resolveOverlay(
+    private suspend fun resolveUndetailedPackage(
         packageName: String
     ): Pair<Boolean, AppCompilationInfo.SkipReason?> {
         val dump = cachedPackageDumps[packageName] ?: run {
@@ -389,9 +412,9 @@ class CompilationInfoResolver @Inject constructor(
                 packageName = packageName, detail = "Confirmed as overlay/RRO")
             false to AppCompilationInfo.SkipReason.AlreadyOptimal("overlay/rro")
         } else {
-            logger.addLogEntry(LogEntryType.INFO, "Overlay classification",
-                packageName = packageName, detail = "Not an overlay → keep eligible")
-            true to null
+            logger.addLogEntry(LogEntryType.INFO, "Dexopt classification",
+                packageName = packageName, detail = "No compiler filter reported → skipping")
+            false to AppCompilationInfo.SkipReason.AlreadyOptimal("no dexopt details")
         }
     }
 
