@@ -63,6 +63,8 @@ import com.tony.appbooster.R
 import com.tony.appbooster.domain.model.common.LogEntryType
 import com.tony.appbooster.domain.model.common.LogMessageKey
 import com.tony.appbooster.domain.model.common.OptimizationLogEntry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -232,18 +234,21 @@ private fun ActivityLogItem(entry: OptimizationLogEntry) {
     var appLabel by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(entry.packageName) {
-        entry.packageName?.let { pkg ->
-            try {
+        val pkg = entry.packageName ?: return@LaunchedEffect
+
+        // PackageManager lookups and icon decoding hit the disk; keep them off the
+        // main thread or the feed janks while entries stream in during a run.
+        val loaded = withContext(Dispatchers.IO) {
+            runCatching {
                 val pm = context.packageManager
                 val applicationInfo = pm.getApplicationInfo(pkg, 0)
-                val drawable = applicationInfo.loadIcon(pm)
-                appIcon = drawable.toBitmap(width = 64, height = 64)
-                appLabel = applicationInfo.loadLabel(pm).toString()
-            } catch (_: Exception) {
-                appIcon = null
-                appLabel = null
-            }
+                applicationInfo.loadIcon(pm).toBitmap(width = 64, height = 64) to
+                    applicationInfo.loadLabel(pm).toString()
+            }.getOrNull()
         }
+
+        appIcon = loaded?.first
+        appLabel = loaded?.second
     }
 
     val resolvedMessage = entry.messageKey?.let { resolveLogMessageKey(it) } ?: entry.message

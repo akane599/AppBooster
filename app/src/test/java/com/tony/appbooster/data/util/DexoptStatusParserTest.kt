@@ -162,6 +162,75 @@ class DexoptStatusParserTest {
         assertNull(DexoptStatusParser.parseCompilerFilterFromDexoptDump("com.example.app", ""))
     }
 
+    @Test
+    fun `given a longer package listed first when parseCompilerFilterFromDexoptDump then uses the exact package block`() {
+        val dump = """
+            Dexopt state:
+              [com.example.application]
+                compiler-filter=speed
+              [com.example.app]
+                compiler-filter=verify
+        """.trimIndent()
+
+        assertEquals(
+            "verify",
+            DexoptStatusParser.parseCompilerFilterFromDexoptDump("com.example.app", dump)
+        )
+    }
+
+    @Test
+    fun `given package without filter details when parseCompilerFilterFromDexoptDump then does not read the next package block`() {
+        val dump = """
+            Dexopt state:
+              [com.example.app]
+              [com.other.app]
+                compiler-filter=speed
+        """.trimIndent()
+
+        assertEquals(
+            "unknown-present",
+            DexoptStatusParser.parseCompilerFilterFromDexoptDump("com.example.app", dump)
+        )
+    }
+
+    @Test
+    fun `given only a longer package present when parseCompilerFilterFromDexoptDump then returns null`() {
+        val dump = """
+            Dexopt state:
+              [com.example.application]
+                compiler-filter=speed
+        """.trimIndent()
+
+        assertNull(DexoptStatusParser.parseCompilerFilterFromDexoptDump("com.example.app", dump))
+    }
+
+    // ── containsPackageToken ─────────────────────────────────────────────────
+
+    @Test
+    fun `given exact package mention when containsPackageToken then returns true`() {
+        assertTrue(DexoptStatusParser.containsPackageToken("  [com.example.app]", "com.example.app"))
+        assertTrue(DexoptStatusParser.containsPackageToken("com.example.app", "com.example.app"))
+        assertTrue(
+            DexoptStatusParser.containsPackageToken(
+                "path: /data/app/com.example.app/base.apk",
+                "com.example.app"
+            )
+        )
+    }
+
+    @Test
+    fun `given package as a prefix of another when containsPackageToken then returns false`() {
+        assertFalse(
+            DexoptStatusParser.containsPackageToken("  [com.example.application]", "com.example.app")
+        )
+        assertFalse(
+            DexoptStatusParser.containsPackageToken("  [com.example.app2]", "com.example.app")
+        )
+        assertFalse(
+            DexoptStatusParser.containsPackageToken("  [org.mirror.com.example.app]", "com.example.app")
+        )
+    }
+
     // ── parseCompilerFilterFromLine ───────────────────────────────────────────
 
     @Test

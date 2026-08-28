@@ -69,21 +69,64 @@ internal object DexoptStatusParser {
     fun parseCompilerFilterFromDexoptDump(packageName: String, dump: String): String? {
         val lines = dump.lineSequence().toList()
 
-        // Prefer the first occurrence of the package name in bracketed form
+        // Prefer the bracketed header; fall back to a bare mention of the package.
+        // Both matches are token-bounded so that a query for "com.example.app" can never
+        // latch onto the block of an unrelated "com.example.application".
         val bracketed = "[$packageName]"
-        val idx = lines.indexOfFirst { it.contains(bracketed) || it.contains(packageName) }
+        val bracketedIdx = lines.indexOfFirst { it.contains(bracketed) }
+        val idx = if (bracketedIdx >= 0) {
+            bracketedIdx
+        } else {
+            lines.indexOfFirst { containsPackageToken(it, packageName) }
+        }
         if (idx < 0) return null
 
-        val window = lines.subList(idx, minOf(idx + 30, lines.size))
-        for (line in window) {
-            val lower = line.trim().lowercase()
-            parseCompilerFilterFromLine(lower)?.let { return it }
+        // Stop at the next package header so a package listed without filter details
+        // does not inherit the filter reported for the package that follows it.
+        val hardLimit = minOf(idx + DUMP_SCAN_WINDOW_LINES, lines.size)
+        for (i in idx until hardLimit) {
+            val line = lines[i]
+            if (i > idx && startsOtherPackageBlock(line, packageName)) break
+            parseCompilerFilterFromLine(line.trim().lowercase())?.let { return it }
         }
 
         // If we can see the package in a Dexopt state section but no filter lines are provided,
         // return a marker so callers can treat it differently from "not found".
         return if (isPackagePresentInDexoptDump(packageName, dump)) "unknown-present" else null
     }
+
+    /**
+     * Checks whether [line] mentions [packageName] as a whole token rather than as a
+     * prefix of a longer package name (`com.example.app` vs `com.example.app2`).
+     */
+    internal fun containsPackageToken(line: String, packageName: String): Boolean {
+        var from = 0
+        while (from <= line.length - packageName.length) {
+            val at = line.indexOf(packageName, from)
+            if (at < 0) return false
+            val before = line.getOrNull(at - 1)
+            val after = line.getOrNull(at + packageName.length)
+            if (!isPackageNameChar(before) && !isPackageNameChar(after)) return true
+            from = at + 1
+        }
+        return false
+    }
+
+    /** True when [line] is the bracketed header of a package other than [packageName]. */
+    private fun startsOtherPackageBlock(line: String, packageName: String): Boolean {
+        val header = PACKAGE_HEADER_REGEX.find(line)?.groupValues?.getOrNull(1) ?: return false
+        return header != packageName
+    }
+
+    private fun isPackageNameChar(char: Char?): Boolean =
+        char != null && (char.isLetterOrDigit() || char == '.' || char == '_')
+
+    /** Maximum number of lines inspected after a package header. */
+    private const val DUMP_SCAN_WINDOW_LINES = 30
+
+    /** Matches a bracketed dotted identifier such as `[com.example.app]`. */
+    private val PACKAGE_HEADER_REGEX =
+        Regex("""\[([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)]""")
 
     /**
      * Extracts a compiler filter keyword from a single lowercased line.

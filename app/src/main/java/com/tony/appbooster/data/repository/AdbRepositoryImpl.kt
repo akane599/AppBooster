@@ -14,6 +14,7 @@ import com.tony.appbooster.domain.model.common.ResourceError
 import com.tony.appbooster.domain.model.settings.AppOptimizationType
 import com.tony.appbooster.domain.repository.AdbConnectionState
 import com.tony.appbooster.domain.repository.AdbRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicBoolean
@@ -232,6 +233,15 @@ class AdbRepositoryImpl @Inject constructor(
         }.fold(
             onSuccess = { Resource.Success(Unit) },
             onFailure = { throwable ->
+                throwable.rethrowIfCoroutineCancellation()
+
+                // A stop requested during the pre-flight analysis is a user action,
+                // not a failure: report it as such instead of "Optimization failed".
+                if (throwable is UserCancellationException) {
+                    finaliseCancellation()
+                    return@fold Resource.Success(Unit)
+                }
+
                 logger.addLog("Optimization failed: ${throwable.message}")
                 logger.addLogEntry(LogEntryType.ERROR, messageKey = LogMessageKey.OPTIMIZATION_FAILED, detail = throwable.message)
                 _optimizationProgress.value = _optimizationProgress.value.copy(isRunning = false)
@@ -261,10 +271,26 @@ class AdbRepositoryImpl @Inject constructor(
      */
     override suspend fun analyzeOptimizationStatus(
         mode: AppOptimizationType
+    ): Resource<OptimizationAnalysis> = runAnalysis(mode, startOfRun = true)
+
+    /**
+     * Shared analysis implementation.
+     *
+     * @param mode The optimisation mode to analyse against.
+     * @param startOfRun True when analysis is the run itself, so the log and the
+     *        per-run caches are reset. False when it runs as the pre-flight step of
+     *        [executeOptimizationCommand], which has already done that reset and whose
+     *        "Starting optimization" entries must survive.
+     */
+    private suspend fun runAnalysis(
+        mode: AppOptimizationType,
+        startOfRun: Boolean
     ): Resource<OptimizationAnalysis> = runCatching {
         analysisCancelRequested.set(false)
-        logger.clearLogEntries()
-        compilationResolver.resetCaches()
+        if (startOfRun) {
+            logger.clearLogs()
+            compilationResolver.resetCaches()
+        }
 
         _optimizationAnalysis.value = _optimizationAnalysis.value.copy(isScanning = true)
         logger.addLogEntry(LogEntryType.START, messageKey = LogMessageKey.STARTING_ANALYSIS)
@@ -282,7 +308,19 @@ class AdbRepositoryImpl @Inject constructor(
     }.fold(
         onSuccess = { Resource.Success(it) },
         onFailure = { throwable ->
-            _optimizationAnalysis.value = _optimizationAnalysis.value.copy(isScanning = false)
+            throwable.rethrowIfCoroutineCancellation()
+
+            _optimizationAnalysis.value = _optimizationAnalysis.value.copy(
+                isScanning = false,
+                currentPackage = ""
+            )
+
+            // A user-requested stop already logged its own "cancelled" entry;
+            // reporting it again as a failure would show a red error in the feed.
+            if (throwable is UserCancellationException) {
+                return@fold Resource.Success(_optimizationAnalysis.value)
+            }
+
             logger.addLogEntry(LogEntryType.ERROR, messageKey = LogMessageKey.ANALYSIS_FAILED, detail = throwable.message)
             Resource.Error(
                 ResourceError.LogicError(
@@ -318,7 +356,7 @@ class AdbRepositoryImpl @Inject constructor(
     /** Resets cancellation flags, log entries, and per-run caches. */
     private fun resetForNewRun() {
         optimizationCancelRequested.set(false)
-        logger.clearLogEntries()
+        logger.clearLogs()
         compilationResolver.resetCaches()
     }
 
@@ -349,8 +387,12 @@ class AdbRepositoryImpl @Inject constructor(
         logger.addLogEntry(LogEntryType.ANALYZING, messageKey = LogMessageKey.ANALYZING_APPS,
             detail = "${allPackages.size} apps")
 
-        return when (val result = analyzeOptimizationStatus(mode)) {
+        return when (val result = runAnalysis(mode, startOfRun = false)) {
             is Resource.Success -> {
+                // A stop during the pre-flight scan yields a partial result; carrying on
+                // would compile an arbitrary subset of the apps the user asked about.
+                if (analysisCancelRequested.get()) throw UserCancellationException()
+
                 val data = result.data
                 data.packagesNeedingOptimization to
                     (data.appsAlreadyOptimized + data.appsWithNoProfile)
@@ -462,6 +504,37 @@ class AdbRepositoryImpl @Inject constructor(
         optimizationCancelRequested.get() ||
             _optimizationProgress.value.result is OptimizationResult.Canceled
 
+    /** Marks an in-flight optimisation as stopped by the user. */
+    private fun finaliseCancellation() {
+        val current = _optimizationProgress.value
+        if (!current.isRunning) return
+
+        _optimizationProgress.value = current.copy(
+            isRunning = false,
+            result = OptimizationResult.Canceled,
+            currentAppPackage = ""
+        )
+    }
+
+    /**
+     * Rethrows coroutine cancellation instead of letting `runCatching` swallow it.
+     *
+     * Without this, cancelling the WorkManager job would surface as an ordinary
+     * `Resource.Error`, so the Worker's `catch (CancellationException)` block — which
+     * resets the repository state the UI renders — would never run.
+     */
+    private fun Throwable.rethrowIfCoroutineCancellation() {
+        if (this is CancellationException) throw this
+    }
+
+    /**
+     * Signals a stop requested by the user.
+     *
+     * Deliberately *not* a [CancellationException]: it must survive `runCatching`
+     * so it can be translated into a "cancelled" outcome rather than a failure.
+     */
+    private class UserCancellationException : Exception("Cancelled by user")
+
     /** Updates analysis and progress state after a successful run. */
     private fun finaliseCompletion(
         totalInstalled: Int,
@@ -529,9 +602,7 @@ class AdbRepositoryImpl @Inject constructor(
         )
 
         for ((index, packageName) in packages.withIndex()) {
-            if (analysisCancelRequested.get()) {
-                throw java.util.concurrent.CancellationException("Analysis cancelled by user")
-            }
+            if (analysisCancelRequested.get()) throw UserCancellationException()
 
             _optimizationAnalysis.value = _optimizationAnalysis.value.copy(
                 currentPackage = packageName,

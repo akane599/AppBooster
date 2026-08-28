@@ -1,6 +1,5 @@
 package com.tony.appbooster.data.util
 
-import com.tony.appbooster.data.util.OptimizationLogger.Companion.MAX_LOG_ENTRIES
 import com.tony.appbooster.domain.model.common.LogEntryType
 import com.tony.appbooster.domain.model.common.LogMessageKey
 import com.tony.appbooster.domain.model.common.OptimizationLogEntry
@@ -25,6 +24,9 @@ class OptimizationLogger @Inject constructor() {
     companion object {
         /** Maximum number of structured log entries retained in memory. */
         private const val MAX_LOG_ENTRIES = 100
+
+        /** Maximum number of raw output lines retained in memory. */
+        private const val MAX_LOG_LINES = 500
     }
 
     private val _commandOutput = MutableStateFlow<List<String>>(emptyList())
@@ -40,10 +42,14 @@ class OptimizationLogger @Inject constructor() {
     /**
      * Appends a raw text line to the command output history.
      *
+     * Lines are capped at [MAX_LOG_LINES] for the same reason entries are:
+     * a single run over a few hundred packages emits thousands of lines, and
+     * this logger is a [Singleton] that outlives every run.
+     *
      * @param line Single textual log entry to append in execution order.
      */
     fun addLog(line: String) {
-        _commandOutput.value = _commandOutput.value + line
+        _commandOutput.value = (_commandOutput.value + line).takeLastCapped(MAX_LOG_LINES)
     }
 
     /**
@@ -72,19 +78,20 @@ class OptimizationLogger @Inject constructor() {
             message = message,
             detail = detail
         )
-        val updated = _logEntries.value + entry
-        _logEntries.value = if (updated.size > MAX_LOG_ENTRIES) {
-            updated.takeLast(MAX_LOG_ENTRIES)
-        } else {
-            updated
-        }
+        _logEntries.value = (_logEntries.value + entry).takeLastCapped(MAX_LOG_ENTRIES)
     }
 
     /**
-     * Clears all structured log entries. Called when starting a new run.
+     * Clears both log streams. Called when starting a new run so that the feed
+     * shows only the current run and memory does not accumulate across runs.
      */
-    fun clearLogEntries() {
+    fun clearLogs() {
         _logEntries.value = emptyList()
+        _commandOutput.value = emptyList()
     }
+
+    /** Returns the last [max] elements, or the receiver itself when already within budget. */
+    private fun <T> List<T>.takeLastCapped(max: Int): List<T> =
+        if (size > max) takeLast(max) else this
 }
 
