@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Base ViewModel class providing common functionality for UI state management,
@@ -203,6 +204,16 @@ abstract class BaseViewModel<UI_TYPE, UI_EVENT, UI_EFFECT>(
         invokeOnCompletion: ((success: Boolean) -> Unit)? = null,
         skipLoading: Boolean = false
     ) {
+        // Guards against a double callback: the completion handler below must still fire
+        // when the coroutine dies before reaching either branch, but not a second time.
+        // Atomic because that handler runs on whichever thread completes the job.
+        val completionNotified = AtomicBoolean(false)
+        fun notifyCompletion(success: Boolean) {
+            if (completionNotified.compareAndSet(false, true)) {
+                invokeOnCompletion?.invoke(success)
+            }
+        }
+
         viewModelScope.launch(exceptionHandler) {
             if (!skipLoading) {
                 setLoadingState()
@@ -218,19 +229,25 @@ abstract class BaseViewModel<UI_TYPE, UI_EVENT, UI_EFFECT>(
                         )
                     }
 
-                    invokeOnCompletion?.invoke(true)
+                    notifyCompletion(true)
                 }
-                else -> handleError(
-                    resource,
-                    retryAction,
-                    updateUiAfterError
-                )
+                else -> {
+                    handleError(
+                        resource,
+                        retryAction,
+                        updateUiAfterError
+                    )
+                    // A domain error completes the coroutine normally, so the handler
+                    // below never sees it. Callers still need to unwind their
+                    // "in progress" flags, otherwise the UI stays stuck on loading.
+                    notifyCompletion(false)
+                }
             }
         }.invokeOnCompletion {
             if (it != null) {
                 Log.e(LOG_TAG, "Coroutine completed with error", it)
-                invokeOnCompletion?.invoke(false)
             }
+            notifyCompletion(it == null)
         }
     }
 

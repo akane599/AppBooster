@@ -56,6 +56,15 @@ class CompilationInfoResolver @Inject constructor(
     private var cachedDexoptDump: String? = null
 
     /**
+     * Whether the global dexopt dump was already attempted for the current run.
+     *
+     * Tracked separately from [cachedDexoptDump] because a failed dump also
+     * yields `null`; without this flag the expensive dump would be retried once
+     * per package on devices where it is unavailable.
+     */
+    private var dexoptDumpAttempted = false
+
+    /**
      * Per-package `dumpsys package <pkg>` cache for overlay detection.
      */
     private val cachedPackageDumps = mutableMapOf<String, String>()
@@ -75,6 +84,7 @@ class CompilationInfoResolver @Inject constructor(
      */
     fun resetCaches() {
         cachedDexoptDump = null
+        dexoptDumpAttempted = false
         cachedPackageDumps.clear()
     }
 
@@ -153,16 +163,17 @@ class CompilationInfoResolver @Inject constructor(
         targetFilter: String,
         lastUpdateTimeMs: Long?
     ): AppCompilationInfo? {
-        if (cachedDexoptDump == null) {
+        if (!dexoptDumpAttempted) {
             logger.addLogEntry(LogEntryType.ANALYZING, "Dexopt dump",
                 detail = "dumpsys package dexopt (once per run)")
+            cachedDexoptDump = fetchDexoptDump()
+            dexoptDumpAttempted = true
         } else {
             logger.addLogEntry(LogEntryType.INFO, "Dexopt dump",
                 packageName = packageName, detail = "cache hit")
         }
 
-        val dump = cachedDexoptDump ?: fetchDexoptDump()
-        cachedDexoptDump = dump
+        val dump = cachedDexoptDump
 
         if (dump != null) {
             val filter = DexoptStatusParser.parseCompilerFilterFromDexoptDump(packageName, dump)

@@ -329,4 +329,35 @@ class MainViewModelTest {
 
         assertFalse(vm.uiState.value.data?.isStartingOptimization ?: false)
     }
+
+    @Test
+    fun `given startOptimization fails when OnStartOptimizationClicked then isStartingOptimization ends as false`() = runTest {
+        coEvery { startOptimizationUseCase(any()) } returns Resource.Error(ResourceError.LogicError("shizuku down"))
+        val vm = createViewModel()
+        advanceUntilIdle()
+
+        vm.onEvent(MainUiEvent.OnStartOptimizationClicked)
+        advanceUntilIdle()
+
+        // A failed start must release the flag, otherwise the Start button stays
+        // disabled with a spinner for the rest of the ViewModel's lifetime.
+        assertFalse(vm.uiState.value.data?.isStartingOptimization ?: false)
+    }
+
+    @Test
+    fun `given a failed start when retried successfully then optimization is started again`() = runTest {
+        coEvery { startOptimizationUseCase(any()) } returns Resource.Error(ResourceError.LogicError("shizuku down"))
+        val vm = createViewModel()
+        advanceUntilIdle()
+
+        vm.onEvent(MainUiEvent.OnStartOptimizationClicked)
+        advanceUntilIdle()
+
+        coEvery { startOptimizationUseCase(any()) } returns Resource.Success(Unit)
+        vm.onEvent(MainUiEvent.OnStartOptimizationClicked)
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { startOptimizationUseCase(any()) }
+        assertFalse(vm.uiState.value.data?.isStartingOptimization ?: false)
+    }
 }
